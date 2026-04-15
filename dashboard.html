@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Adaptive Load Balancer</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;600&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:        #0a0c0f;
+    --panel:     #0f1318;
+    --border:    #1e2530;
+    --border-hi: #2e3d50;
+    --text:      #c8d8e8;
+    --dim:       #4a5a6a;
+    --accent:    #00d4ff;
+    --green:     #00e676;
+    --yellow:    #ffca28;
+    --red:       #ff5252;
+    --orange:    #ff9800;
+    --rr-color:  #00e676;
+    --lc-color:  #ffca28;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* scanline overlay */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.07) 2px,
+      rgba(0,0,0,0.07) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    position: sticky; top: 0; z-index: 100;
+  }
+
+  .wordmark {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .wordmark span { color: var(--dim); font-weight: 300; }
+
+  .header-meta {
+    display: flex; gap: 28px; align-items: center;
+    font-size: 11px; color: var(--dim);
+  }
+  .header-meta strong { color: var(--text); }
+
+  .pulse {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  /* ── Layout ── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    grid-template-rows: auto auto 1fr;
+    gap: 1px;
+    background: var(--border);
+    min-height: calc(100vh - 53px);
+  }
+
+  .panel {
+    background: var(--panel);
+    padding: 20px 24px;
+  }
+
+  /* ── Algorithm badge ── */
+  .algo-row {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    padding: 16px 28px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .algo-badge {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .algo-label { color: var(--dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .algo-value {
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.06em;
+    transition: color 0.3s, text-shadow 0.3s;
+  }
+  .algo-value.rr { color: var(--rr-color); text-shadow: 0 0 12px rgba(0,230,118,0.4); }
+  .algo-value.lc { color: var(--lc-color); text-shadow: 0 0 12px rgba(255,202,40,0.4); }
+
+  .stat-chips {
+    display: flex; gap: 20px; flex-wrap: wrap;
+  }
+  .chip {
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .chip-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  .chip-val   { font-size: 18px; font-weight: 600; color: var(--text); }
+  .chip-val.red    { color: var(--red); }
+  .chip-val.green  { color: var(--green); }
+  .chip-val.yellow { color: var(--yellow); }
+
+  .imb-bar-wrap {
+    flex: 1; display: flex; flex-direction: column; gap: 6px; justify-content: center;
+  }
+  .imb-bar-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+  .imb-bar-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+  }
+  .imb-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.4s, background 0.4s;
+  }
+  .threshold-line {
+    position: absolute; top: 0; height: 100%;
+    width: 2px; background: var(--dim);
+    transition: left 0.3s;
+  }
+
+  /* ── Servers section ── */
+  .section-title {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .servers { grid-column: 1; }
+
+  .server-list { display: flex; flex-direction: column; gap: 14px; }
+
+  .server-card {
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 14px 16px;
+    transition: border-color 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+  .server-card::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px;
+    transition: background 0.3s;
+  }
+  .server-card.active { border-color: var(--border-hi); }
+  .server-card.slow::before { background: var(--orange); }
+  .server-card:not(.slow)::before { background: var(--accent); }
+
+  .server-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .server-name {
+    font-weight: 600; font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .slow-tag {
+    font-size: 10px; font-weight: 400;
+    color: var(--orange);
+    border: 1px solid var(--orange);
+    padding: 1px 6px;
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+  }
+  .server-conns {
+    font-size: 22px; font-weight: 700;
+    transition: color 0.3s;
+  }
+
+  .server-meta {
+    display: flex; gap: 20px; font-size: 11px; color: var(--dim);
+    margin-bottom: 10px;
+  }
+  .server-meta strong { color: var(--text); }
+
+  .conn-bar-track {
+    height: 8px;
+    background: var(--border);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .conn-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    transition: width 0.5s cubic-bezier(.4,0,.2,1), background 0.3s;
+  }
+
+  /* ── Event log ── */
+  .events-panel {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    display: flex; flex-direction: column;
+    border-left: 1px solid var(--border);
+  }
+  .events-panel .section-title { flex-shrink: 0; }
+
+  .event-list {
+    flex: 1;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .event-list::-webkit-scrollbar { width: 4px; }
+  .event-list::-webkit-scrollbar-track { background: transparent; }
+  .event-list::-webkit-scrollbar-thumb { background: var(--border-hi); }
+
+  .event-row {
+    display: grid;
+    grid-template-columns: 48px 1fr;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px solid rgba(30,37,48,0.6);
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; } }
+
+  .event-kind {
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding-top: 1px;
+  }
+  .event-kind.REQ    { color: var(--accent); }
+  .event-kind.SWITCH { color: var(--yellow); }
+
+  .event-msg { color: var(--dim); word-break: break-all; }
+  .event-msg em { color: var(--text); font-style: normal; }
+
+  /* ── History chart ── */
+  .chart-panel { grid-column: 1; }
+
+  .chart-wrap { position: relative; }
+  canvas { width: 100%; height: 120px; display: block; }
+
+  .chart-legend {
+    display: flex; gap: 16px; margin-top: 8px; font-size: 11px;
+  }
+  .legend-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+
+  /* ── Algo switch markers ── */
+  .switch-flash {
+    animation: switchFlash 0.6s ease;
+  }
+  @keyframes switchFlash {
+    0%   { background: rgba(255,202,40,0.15); }
+    100% { background: var(--panel); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">Adaptive Load Balancer <span>/ monitor</span></div>
+  <div class="header-meta">
+    <span><span class="pulse"></span></span>
+    <span>LIVE — refreshes every 800ms</span>
+    <span>balancer :8000 → backends :8001–8004</span>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- Algorithm + top stats -->
+  <div class="algo-row" id="algoRow">
+    <div class="algo-badge">
+      <span class="algo-label">Algorithm</span>
+      <span class="algo-value" id="algoValue">—</span>
+    </div>
+
+    <div class="stat-chips">
+      <div class="chip">
+        <span class="chip-label">Total Requests</span>
+        <span class="chip-val" id="totalReqs">0</span>
+      </div>
+      <div class="chip">
+        <span class="chip-label">Algo Switches</span>
+        <span class="chip-val yellow" id="switches">0</span>
+      </div>
+      <div class="chip">
+        <span class="chip-label">Elapsed</span>
+        <span class="chip-val" id="elapsed">0s</span>
+      </div>
+    </div>
+
+    <div class="imb-bar-wrap">
+      <div class="imb-bar-label">
+        Imbalance: <strong id="imbVal">0</strong>
+        &nbsp;/&nbsp; threshold: <strong id="threshVal">—</strong>
+      </div>
+      <div class="imb-bar-track">
+        <div class="imb-bar-fill" id="imbFill"></div>
+        <div class="threshold-line" id="threshLine"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Servers -->
+  <div class="panel servers">
+    <div class="section-title">Backend Servers</div>
+    <div class="server-list" id="serverList"></div>
+  </div>
+
+  <!-- Event log -->
+  <div class="panel events-panel">
+    <div class="section-title">Event Log</div>
+    <div class="event-list" id="eventList"></div>
+  </div>
+
+  <!-- Conn history chart -->
+  <div class="panel chart-panel">
+    <div class="section-title">Active Connections — History (last 60s)</div>
+    <div class="chart-wrap">
+      <canvas id="histChart"></canvas>
+    </div>
+    <div class="chart-legend" id="chartLegend"></div>
+  </div>
+
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const COLORS      = ['#00d4ff','#00e676','#ff9800','#e040fb'];
+const POLL_MS     = 800;
+const HIST_POINTS = 75;   // ~60s of data
+
+let history       = {};    // port → circular array of active_conns
+let lastEventKeys = new Set();
+let lastAlgo      = null;
+let canvasCtx     = null;
+
+// ── Fetch + render ─────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r    = await fetch('/stats');
+    const data = await r.json();
+    render(data);
+  } catch(e) {
+    document.getElementById('algoValue').textContent = 'OFFLINE';
+  }
+  setTimeout(poll, POLL_MS);
+}
+
+function render(d) {
+  // Algorithm badge
+  const av = document.getElementById('algoValue');
+  const isRR = d.algorithm === 'Round Robin';
+  av.textContent = d.algorithm;
+  av.className   = 'algo-value ' + (isRR ? 'rr' : 'lc');
+
+  if (lastAlgo && lastAlgo !== d.algorithm) {
+    document.getElementById('algoRow').classList.remove('switch-flash');
+    void document.getElementById('algoRow').offsetWidth; // reflow
+    document.getElementById('algoRow').classList.add('switch_flash');
+    document.getElementById('algoRow').style.animation = 'none';
+    requestAnimationFrame(() => {
+      document.getElementById('algoRow').style.animation = '';
+      document.getElementById('algoRow').classList.add('switch-flash');
+    });
+  }
+  lastAlgo = d.algorithm;
+
+  document.getElementById('totalReqs').textContent = d.total_requests;
+  document.getElementById('switches').textContent  = d.algo_switches;
+  document.getElementById('elapsed').textContent   = d.elapsed + 's';
+
+  // Imbalance bar
+  const imb   = d.imbalance;
+  const thr   = d.threshold;
+  const maxImb = Math.max(thr * 2, imb + 1, 8);
+  const pct    = Math.min(imb / maxImb * 100, 100);
+  const thrPct = Math.min(thr / maxImb * 100, 100);
+
+  document.getElementById('imbVal').textContent   = imb;
+  document.getElementById('threshVal').textContent = thr;
+  const fill = document.getElementById('imbFill');
+  fill.style.width      = pct + '%';
+  fill.style.background = imb > thr
+    ? 'var(--red)' : imb === thr
+    ? 'var(--yellow)' : 'var(--green)';
+  document.getElementById('threshLine').style.left = thrPct + '%';
+
+  // Servers
+  renderServers(d.backends, isRR);
+
+  // History
+  d.backends.forEach(b => {
+    if (!history[b.port]) history[b.port] = Array(HIST_POINTS).fill(0);
+    history[b.port].push(b.active_conns);
+    if (history[b.port].length > HIST_POINTS) history[b.port].shift();
+  });
+  drawChart(d.backends);
+
+  // Events
+  renderEvents(d.events || []);
+}
+
+function renderServers(backends, isRR) {
+  const maxConn = Math.max(...backends.map(b => b.active_conns), 1);
+  const list    = document.getElementById('serverList');
+
+  backends.forEach((b, i) => {
+    let card = document.getElementById('card-' + b.port);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'card-' + b.port;
+      card.className = 'server-card' + (b.is_slow ? ' slow' : '');
+      card.innerHTML = `
+        <div class="server-header">
+          <div class="server-name">
+            ${b.name}
+            ${b.is_slow ? '<span class="slow-tag">SLOW</span>' : ''}
+          </div>
+          <div class="server-conns" id="conns-${b.port}">0</div>
+        </div>
+        <div class="server-meta">
+          <span>Handled: <strong id="handled-${b.port}">0</strong></span>
+          <span>Errors: <strong id="errors-${b.port}" style="color:var(--red)">0</strong></span>
+          <span>Port: <strong>${b.port}</strong></span>
+        </div>
+        <div class="conn-bar-track">
+          <div class="conn-bar-fill" id="bar-${b.port}"></div>
+        </div>`;
+      list.appendChild(card);
+    }
+
+    const pct   = b.active_conns / maxConn * 100;
+    const color = b.active_conns > (isRR ? 2 : 0) && b.is_slow
+      ? 'var(--orange)'
+      : COLORS[i % COLORS.length];
+
+    document.getElementById('conns-'   + b.port).textContent  = b.active_conns;
+    document.getElementById('conns-'   + b.port).style.color  = b.active_conns > 4 ? 'var(--red)' : color;
+    document.getElementById('handled-' + b.port).textContent  = b.total_handled;
+    document.getElementById('errors-'  + b.port).textContent  = b.total_errors;
+
+    const bar = document.getElementById('bar-' + b.port);
+    bar.style.width      = pct + '%';
+    bar.style.background = color;
+
+    if (b.active_conns > 0) card.classList.add('active');
+    else                    card.classList.remove('active');
+  });
+}
+
+// ── Canvas chart ───────────────────────────────────────────────────────────
+function drawChart(backends) {
+  const canvas = document.getElementById('histChart');
+  const dpr    = window.devicePixelRatio || 1;
+  const W      = canvas.clientWidth  || 600;
+  const H      = 120;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  // grid lines
+  const maxVal = Math.max(...Object.values(history).flat(), 4);
+  for (let v = 0; v <= maxVal; v += 2) {
+    const y = H - (v / maxVal) * (H - 10) - 4;
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(30,37,48,0.8)';
+    ctx.lineWidth   = 1;
+    ctx.moveTo(0, y); ctx.lineTo(W, y);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(74,90,106,0.7)';
+    ctx.font      = '9px IBM Plex Mono';
+    ctx.fillText(v, 2, y - 2);
+  }
+
+  // series
+  backends.forEach((b, i) => {
+    const pts = history[b.port] || [];
+    if (!pts.length) return;
+    ctx.beginPath();
+    ctx.strokeStyle = COLORS[i % COLORS.length];
+    ctx.lineWidth   = 1.5;
+    ctx.shadowColor = COLORS[i % COLORS.length];
+    ctx.shadowBlur  = 4;
+    pts.forEach((v, x) => {
+      const px = (x / (HIST_POINTS - 1)) * W;
+      const py = H - (v / maxVal) * (H - 10) - 4;
+      x === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  });
+
+  // legend
+  const legend = document.getElementById('chartLegend');
+  if (legend.children.length === 0) {
+    backends.forEach((b, i) => {
+      const el = document.createElement('span');
+      el.innerHTML = `<span class="legend-dot" style="background:${COLORS[i]}"></span>${b.name}${b.is_slow ? ' (slow)' : ''}`;
+      legend.appendChild(el);
+    });
+  }
+}
+
+// ── Event log ──────────────────────────────────────────────────────────────
+function renderEvents(events) {
+  const list = document.getElementById('eventList');
+  const shown = new Set();
+
+  events.forEach(ev => {
+    const key = ev.ts + ev.msg;
+    shown.add(key);
+    if (lastEventKeys.has(key)) return;
+
+    const row  = document.createElement('div');
+    row.className = 'event-row';
+
+    const msg = ev.msg
+      .replace(/(srv-\d+)/g, '<em>$1</em>')
+      .replace(/(Round Robin|Least Connections)/g, '<em>$1</em>')
+      .replace(/(imbalance=\d+)/g, '<em>$1</em>');
+
+    row.innerHTML = `
+      <span class="event-kind ${ev.kind}">${ev.kind}</span>
+      <span class="event-msg">${msg}</span>`;
+
+    list.insertBefore(row, list.firstChild);
+  });
+
+  // trim to 60 visible rows
+  while (list.children.length > 60) list.removeChild(list.lastChild);
+  lastEventKeys = shown;
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+poll();
+</script>
+</body>
+</html>
